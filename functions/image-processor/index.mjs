@@ -2,7 +2,6 @@
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import Sharp from 'sharp';
 
-// Initialize S3 client
 const s3Client = new S3Client({});
 
 // Match Next.js default configurations
@@ -12,148 +11,156 @@ const IMAGE_SIZES = [16, 32, 48, 64, 96, 128, 256, 384];
 // Combine all sizes for processing
 const ALL_SIZES = [...IMAGE_SIZES, ...DEVICE_SIZES].sort((a, b) => a - b);
 
-// Quality configuration based on size ranges
+// Process images in smaller chunks to manage memory
+const CHUNK_SIZE = 5;
+
 const getQualityConfig = (width) => {
-  if (width <= 384) return { quality: 80, effort: 4 }; // Image sizes
-  if (width <= 1080) return { quality: 85, effort: 5 }; // Mobile and tablet
-  return { quality: 90, effort: 6 }; // Larger screens
+  if (width <= 384) return { quality: 80, effort: 4 };
+  if (width <= 1080) return { quality: 85, effort: 5 };
+  return { quality: 90, effort: 6 };
 };
 
 async function processImage(buffer, key) {
   try {
-    // Get image metadata
     const metadata = await Sharp(buffer).metadata();
     const { width: originalWidth, height: originalHeight } = metadata;
     const aspectRatio = originalHeight / originalWidth;
 
-    // Create versions based on original size
-    const versions = {};
+    console.log('Original image dimensions:', { width: originalWidth, height: originalHeight });
 
-    for (const targetWidth of ALL_SIZES) {
-      // Skip sizes larger than original
-      if (targetWidth > originalWidth) continue;
+    // Filter sizes that are smaller than original
+    const applicableSizes = ALL_SIZES.filter(size => size <= originalWidth);
+    console.log('Processing sizes:', applicableSizes);
 
-      const targetHeight = Math.round(targetWidth * aspectRatio);
-      const qualityConfig = getQualityConfig(targetWidth);
+    // Process in chunks
+    let processedCount = 0;
+    for (let i = 0; i < applicableSizes.length; i += CHUNK_SIZE) {
+      const chunk = applicableSizes.slice(i, i + CHUNK_SIZE);
+      console.log(`Processing chunk ${Math.floor(i/CHUNK_SIZE) + 1}/${Math.ceil(applicableSizes.length/CHUNK_SIZE)}, sizes:`, chunk);
 
-      const processedImage = Sharp(buffer).resize({
-        width: targetWidth,
-        height: targetHeight,
-        fit: 'contain',
-        background: { r: 0, g: 0, b: 0, alpha: 0 }
-      });
+      const processedVersions = {};
 
-      // Process WebP version
-      const webpVersion = await processedImage.clone()
-        .webp({
-          quality: qualityConfig.quality,
-          effort: qualityConfig.effort,
-          smartSubsample: true,
-          mixed: true
-        })
-        .toBuffer({ resolveWithObject: true });
+      await Promise.all(chunk.map(async targetWidth => {
+        const targetHeight = Math.round(targetWidth * aspectRatio);
+        const qualityConfig = getQualityConfig(targetWidth);
+        
+        const processedImage = Sharp(buffer).resize({
+          width: targetWidth,
+          height: targetHeight,
+          fit: 'contain',
+          background: { r: 0, g: 0, b: 0, alpha: 0 }
+        });
 
-      versions[`${targetWidth}-webp`] = {
-        data: webpVersion.data,
-        info: {
-          width: webpVersion.info.width,
-          height: webpVersion.info.height,
-          format: 'webp',
-          size: webpVersion.data.length,
-          quality: qualityConfig.quality
-        }
-      };
+        // Process WebP version
+        const webpVersion = await processedImage.clone()
+          .webp({
+            quality: qualityConfig.quality,
+            effort: qualityConfig.effort,
+            smartSubsample: true,
+            mixed: true
+          })
+          .toBuffer({ resolveWithObject: true });
 
-      // Process AVIF version
-      const avifVersion = await processedImage.clone()
-        .avif({
-          quality: qualityConfig.quality,
-          effort: qualityConfig.effort + 2, // Higher effort for AVIF
-          chromaSubsampling: '4:4:4'
-        })
-        .toBuffer({ resolveWithObject: true });
+        processedVersions[`${targetWidth}-webp`] = {
+          data: webpVersion.data,
+          info: {
+            width: webpVersion.info.width,
+            height: webpVersion.info.height,
+            format: 'webp',
+            size: webpVersion.data.length,
+            quality: qualityConfig.quality
+          }
+        };
 
-      versions[`${targetWidth}-avif`] = {
-        data: avifVersion.data,
-        info: {
-          width: avifVersion.info.width,
-          height: avifVersion.info.height,
-          format: 'avif',
-          size: avifVersion.data.length,
-          quality: qualityConfig.quality
-        }
-      };
+        // Process AVIF version
+        const avifVersion = await processedImage.clone()
+          .avif({
+            quality: qualityConfig.quality,
+            effort: qualityConfig.effort + 2,
+            chromaSubsampling: '4:4:4'
+          })
+          .toBuffer({ resolveWithObject: true });
+
+        processedVersions[`${targetWidth}-avif`] = {
+          data: avifVersion.data,
+          info: {
+            width: avifVersion.info.width,
+            height: avifVersion.info.height,
+            format: 'avif',
+            size: avifVersion.data.length,
+            quality: qualityConfig.quality
+          }
+        };
+
+        processedCount += 2; // Count both WebP and AVIF versions
+      }));
+
+      // Upload this chunk's versions
+      await Promise.all(Object.entries(processedVersions).map(([versionKey, version]) => {
+        const [width, format] = versionKey.split('-');
+        const newKey = `processed/w${width}/${key.replace(/\.[^/.]+$/, `.${format}`)}`;
+        
+        console.log(`Uploading ${format} version for width ${width}`);
+
+        return s3Client.send(new PutObjectCommand({
+          Bucket: process.env.PROCESSED_BUCKET,
+          Key: newKey,
+          Body: version.data,
+          ContentType: `image/${format}`,
+          Metadata: {
+            'width': version.info.width.toString(),
+            'height': version.info.height.toString(),
+            'size': version.info.size.toString(),
+            'quality': version.info.quality.toString(),
+          },
+          CacheControl: 'public, max-age=31536000, immutable'
+        }));
+      }));
+
+      console.log(`Chunk ${Math.floor(i/CHUNK_SIZE) + 1} complete: ${Object.keys(processedVersions).length} versions uploaded`);
     }
 
-    return versions;
+    return {
+      message: 'Processing complete',
+      totalVersions: processedCount
+    };
   } catch (error) {
     console.error('Error processing image:', error);
     throw error;
   }
 }
 
-export const handler = async (event) => {
+exports.handler = async (event) => {
   console.log('Event received:', JSON.stringify(event, null, 2));
+  
   try {
     const record = event.Records[0];
     const bucket = record.s3.bucket.name;
     const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, ' '));
+    
+    console.log('Processing image:', { bucket, key, size: record.s3.object.size });
 
-    console.log('Processing image from:', { bucket, key });
-
-    // Get original image using SDK v3
     const getCommand = new GetObjectCommand({
       Bucket: bucket,
       Key: key
     });
-
+    
     console.log('Fetching original image...');
     const originalImage = await s3Client.send(getCommand);
     const buffer = Buffer.from(await originalImage.Body.transformToByteArray());
     console.log('Original image fetched, size:', buffer.length);
 
-    console.log('Starting image processing...');
-    const processedVersions = await processImage(buffer, key);
-    console.log('Image processing complete, versions:', Object.keys(processedVersions));
-
-    // Upload versions using SDK v3
-    console.log('Starting upload of processed versions...');
-    const uploadPromises = Object.entries(processedVersions).map(([versionKey, version]) => {
-      const [width, format] = versionKey.split('-');
-      const newKey = `processed/w${width}/${key.replace(/\.[^/.]+$/, `.${format}`)}`;
-
-      console.log('Uploading version:', { newKey, format, width });
-
-      const putCommand = new PutObjectCommand({
-        Bucket: process.env.PROCESSED_BUCKET,
-        Key: newKey,
-        Body: version.data,
-        ContentType: `image/${format}`,
-        Metadata: {
-          'width': version.info.width.toString(),
-          'height': version.info.height.toString(),
-          'size': version.info.size.toString(),
-          'quality': version.info.quality.toString(),
-        },
-        CacheControl: 'public, max-age=31536000, immutable'
-      });
-
-      return s3Client.send(putCommand);
-    });
-
-    console.log('Waiting for all uploads to complete...');
-    await Promise.all(uploadPromises);
-    console.log('All uploads complete');
+    const result = await processImage(buffer, key);
 
     return {
       statusCode: 200,
       body: JSON.stringify({
         message: 'Image processing complete',
-        versions: Object.keys(processedVersions)
+        ...result
       })
     };
   } catch (error) {
-    console.error('Error: in handler', error);
+    console.error('Error in handler:', error);
     throw error;
   }
 };
