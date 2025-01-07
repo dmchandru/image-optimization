@@ -54,13 +54,13 @@ export class ImageOptimizationStack extends cdk.Stack {
     // Sharp Layer
     const sharpLayer = new lambda.LayerVersion(this, 'SharpLayer', {
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-layer/sharp')),
-      compatibleRuntimes: [lambda.Runtime.NODEJS_18_X],
+      compatibleRuntimes: [lambda.Runtime.NODEJS_20_X],
       description: 'Sharp image processing library'
     });
 
     // Image processor Lambda
     const imageProcessor = new NodejsFunction(this, 'ImageProcessor', {
-      runtime: lambda.Runtime.NODEJS_18_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'handler',
       entry: path.join(__dirname, '../lambda/image-processor/index.ts'),
       timeout: Duration.seconds(60),
