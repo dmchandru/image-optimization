@@ -28,14 +28,14 @@ async function processImage(buffer, key) {
 
     // Create versions based on original size
     const versions = {};
-    
+
     for (const targetWidth of ALL_SIZES) {
       // Skip sizes larger than original
       if (targetWidth > originalWidth) continue;
 
       const targetHeight = Math.round(targetWidth * aspectRatio);
       const qualityConfig = getQualityConfig(targetWidth);
-      
+
       const processedImage = Sharp(buffer).resize({
         width: targetWidth,
         height: targetHeight,
@@ -92,28 +92,38 @@ async function processImage(buffer, key) {
   }
 }
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
+  console.log('Event received:', JSON.stringify(event, null, 2));
   try {
     const record = event.Records[0];
     const bucket = record.s3.bucket.name;
     const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, ' '));
+
+    console.log('Processing image from:', { bucket, key });
 
     // Get original image using SDK v3
     const getCommand = new GetObjectCommand({
       Bucket: bucket,
       Key: key
     });
-    
+
+    console.log('Fetching original image...');
     const originalImage = await s3Client.send(getCommand);
     const buffer = Buffer.from(await originalImage.Body.transformToByteArray());
+    console.log('Original image fetched, size:', buffer.length);
 
+    console.log('Starting image processing...');
     const processedVersions = await processImage(buffer, key);
+    console.log('Image processing complete, versions:', Object.keys(processedVersions));
 
     // Upload versions using SDK v3
+    console.log('Starting upload of processed versions...');
     const uploadPromises = Object.entries(processedVersions).map(([versionKey, version]) => {
       const [width, format] = versionKey.split('-');
       const newKey = `processed/w${width}/${key.replace(/\.[^/.]+$/, `.${format}`)}`;
-      
+
+      console.log('Uploading version:', { newKey, format, width });
+
       const putCommand = new PutObjectCommand({
         Bucket: process.env.PROCESSED_BUCKET,
         Key: newKey,
@@ -131,7 +141,9 @@ exports.handler = async (event) => {
       return s3Client.send(putCommand);
     });
 
+    console.log('Waiting for all uploads to complete...');
     await Promise.all(uploadPromises);
+    console.log('All uploads complete');
 
     return {
       statusCode: 200,
@@ -141,7 +153,7 @@ exports.handler = async (event) => {
       })
     };
   } catch (error) {
-    console.error('Error:', error);
+    console.error('Error: in handler', error);
     throw error;
   }
 };
