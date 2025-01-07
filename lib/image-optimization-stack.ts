@@ -5,7 +5,7 @@ import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
-import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import { Duration } from 'aws-cdk-lib';
 import * as path from 'path';
 
@@ -38,8 +38,8 @@ export class ImageOptimizationStack extends cdk.Stack {
     const processedBucket = props.existingProcessedBucket
       ? s3.Bucket.fromBucketName(this, 'ExistingProcessedBucket', props.existingProcessedBucket)
       : new s3.Bucket(this, 'ProcessedBucket', {
-          removalPolicy: cdk.RemovalPolicy.DESTROY,
-          autoDeleteObjects: true,
+          removalPolicy: cdk.RemovalPolicy.RETAIN,
+          autoDeleteObjects: false,
           cors: [{
             allowedMethods: [s3.HttpMethods.GET],
             allowedOrigins: ['*'],
@@ -52,29 +52,30 @@ export class ImageOptimizationStack extends cdk.Stack {
         });
 
     // Sharp Layer
-    const sharpLayer = new lambda.LayerVersion(this, 'SharpLayer', {
-      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-layer/sharp')),
-      compatibleRuntimes: [lambda.Runtime.NODEJS_20_X],
-      description: 'Sharp image processing library'
-    });
+    // const sharpLayer = new lambda.LayerVersion(this, 'SharpLayer', {
+    //   code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-layer/sharp')),
+    //   compatibleRuntimes: [lambda.Runtime.NODEJS_20_X],
+    //   description: 'Sharp image processing library'
+    // });
 
     // Image processor Lambda
-    const imageProcessor = new NodejsFunction(this, 'ImageProcessor', {
+    const imageProcessor = new lambda.Function(this, 'ImageProcessor', {
       runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'handler',
-      entry: path.join(__dirname, '../lambda/image-processor/index.ts'),
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset('functions/image-processor'),
       timeout: Duration.seconds(60),
       memorySize: 2048,
       environment: {
         STAGE: props.stage,
         PROCESSED_BUCKET: processedBucket.bucketName
       },
-      bundling: {
-        minify: true,
-        sourceMap: true,
-        externalModules: ['sharp']
-      },
-      layers: [sharpLayer]
+      logRetention: logs.RetentionDays.ONE_DAY,
+      // bundling: {
+      //   minify: true,
+      //   sourceMap: true,
+      //   externalModules: ['sharp']
+      // },
+      // layers: [sharpLayer]
     });
 
     // Grant permissions
