@@ -130,7 +130,7 @@ async function processImage(buffer, key) {
   }
 }
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   console.log('Event received:', JSON.stringify(event, null, 2));
   
   try {
