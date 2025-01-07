@@ -1,7 +1,9 @@
-// Lambda Image Processor
-const Sharp = require('sharp');
-const AWS = require('aws-sdk');
-const S3 = new AWS.S3();
+// functions/image-processing/index.ts
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import Sharp from 'sharp';
+
+// Initialize S3 client
+const s3Client = new S3Client({});
 
 // Match Next.js default configurations
 const DEVICE_SIZES = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
@@ -34,7 +36,7 @@ async function processImage(buffer, key) {
       const targetHeight = Math.round(targetWidth * aspectRatio);
       const qualityConfig = getQualityConfig(targetWidth);
       
-      let processedImage = Sharp(buffer).resize({
+      const processedImage = Sharp(buffer).resize({
         width: targetWidth,
         height: targetHeight,
         fit: 'contain',
@@ -42,7 +44,7 @@ async function processImage(buffer, key) {
       });
 
       // Process WebP version
-      const webpVersion = await processedImage
+      const webpVersion = await processedImage.clone()
         .webp({
           quality: qualityConfig.quality,
           effort: qualityConfig.effort,
@@ -63,7 +65,7 @@ async function processImage(buffer, key) {
       };
 
       // Process AVIF version
-      const avifVersion = await processedImage
+      const avifVersion = await processedImage.clone()
         .avif({
           quality: qualityConfig.quality,
           effort: qualityConfig.effort + 2, // Higher effort for AVIF
@@ -91,24 +93,28 @@ async function processImage(buffer, key) {
 }
 
 exports.handler = async (event) => {
-  const record = event.Records[0];
-  const bucket = record.s3.bucket.name;
-  const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, ' '));
-
   try {
-    const originalImage = await S3.getObject({
+    const record = event.Records[0];
+    const bucket = record.s3.bucket.name;
+    const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, ' '));
+
+    // Get original image using SDK v3
+    const getCommand = new GetObjectCommand({
       Bucket: bucket,
       Key: key
-    }).promise();
+    });
+    
+    const originalImage = await s3Client.send(getCommand);
+    const buffer = Buffer.from(await originalImage.Body.transformToByteArray());
 
-    const processedVersions = await processImage(originalImage.Body, key);
+    const processedVersions = await processImage(buffer, key);
 
-    // Upload all versions
+    // Upload versions using SDK v3
     const uploadPromises = Object.entries(processedVersions).map(([versionKey, version]) => {
       const [width, format] = versionKey.split('-');
       const newKey = `processed/w${width}/${key.replace(/\.[^/.]+$/, `.${format}`)}`;
       
-      return S3.putObject({
+      const putCommand = new PutObjectCommand({
         Bucket: process.env.PROCESSED_BUCKET,
         Key: newKey,
         Body: version.data,
@@ -120,7 +126,9 @@ exports.handler = async (event) => {
           'quality': version.info.quality.toString(),
         },
         CacheControl: 'public, max-age=31536000, immutable'
-      }).promise();
+      });
+
+      return s3Client.send(putCommand);
     });
 
     await Promise.all(uploadPromises);
