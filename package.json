@@ -8,6 +8,7 @@
       "prebuild": "npm install sharp --cpu=x64 --os=linux --libc=glibc --prefix functions/image-processor",
       "build": "tsc",
       "watch": "tsc -w",
+      "clean": "tsc --build --clean",
       "test": "jest",
       "cdk": "cdk",
       "deploy": "cdk deploy",
