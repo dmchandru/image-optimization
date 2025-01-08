@@ -87,7 +87,7 @@ export class ImageOptimizationStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset('functions/size-processor'),
-      timeout: Duration.minutes(2),
+      timeout: Duration.minutes(3),
       memorySize: 2048,
       environment: {
         PROCESSED_BUCKET: processedBucket.bucketName
