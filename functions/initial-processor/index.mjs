@@ -6,8 +6,10 @@ import sharp from 'sharp';
 const s3Client = new S3Client({});
 const sqsClient = new SQSClient({});
 
-const DEVICE_SIZES = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
-const IMAGE_SIZES = [16, 32, 48, 64, 96, 128, 256, 384];
+// const DEVICE_SIZES = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+// const IMAGE_SIZES = [16, 32, 48, 64, 96, 128, 256, 384];
+const DEVICE_SIZES = [640, 828, 1200, 1920]; // Most common sizes
+const IMAGE_SIZES = [64, 128, 384];          // Essential thumbnails
 const ALL_SIZES = [...IMAGE_SIZES, ...DEVICE_SIZES].sort((a, b) => a - b);
 
 export const handler = async (event) => {
