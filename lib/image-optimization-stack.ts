@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';  // Add this import
 
@@ -92,6 +93,30 @@ export class ImageOptimizationStack extends cdk.Stack {
         PROCESSED_BUCKET: processedBucket.bucketName
       }
     });
+
+    // Grant permissions
+    if (!props.existingSourceBucket) {
+      sourceBucket.grantRead(initialProcessor);
+      sourceBucket.grantRead(sizeProcessor);
+    } else {
+      // Grant permissions for existing source bucket
+      const sourcePermissions = new iam.PolicyStatement({
+        actions: ['s3:GetObject'],
+        resources: [`arn:aws:s3:::${props.existingSourceBucket}/*`]
+      });
+      initialProcessor.addToRolePolicy(sourcePermissions);
+      sizeProcessor.addToRolePolicy(sourcePermissions);
+    }
+
+    if (!props.existingProcessedBucket) {
+      processedBucket.grantWrite(sizeProcessor);
+    } else {
+      // Grant permissions for existing processed bucket
+      sizeProcessor.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['s3:PutObject'],
+        resources: [`arn:aws:s3:::${props.existingProcessedBucket}/*`]
+      }));
+    }
 
     // Grant permissions
     imageProcessingQueue.grantSendMessages(initialProcessor);
