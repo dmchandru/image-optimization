@@ -154,7 +154,7 @@ export class ImageOptimizationStack extends cdk.Stack {
     } else {
       // Grant permissions for existing source bucket
       const sourcePermissions = new iam.PolicyStatement({
-        actions: ['s3:GetObject'],
+        actions: ['s3:GetObject', 's3:GetBucketNotification'],
         resources: [`arn:aws:s3:::${props.existingSourceBucket}/*`]
       });
       initialProcessor.addToRolePolicy(sourcePermissions);
