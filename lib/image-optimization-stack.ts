@@ -28,40 +28,40 @@ export class ImageOptimizationStack extends cdk.Stack {
     const sourceBucket = props.existingSourceBucket
       ? s3.Bucket.fromBucketName(this, 'ExistingSourceBucket', props.existingSourceBucket)
       : new s3.Bucket(this, 'SourceBucket', {
-          removalPolicy: cdk.RemovalPolicy.RETAIN,
-          autoDeleteObjects: false,
-          cors: [{
-            allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.PUT],
-            allowedOrigins: ['*'],
-            allowedHeaders: ['*']
-          }],
-          encryption: s3.BucketEncryption.S3_MANAGED,
-          versioned: true
-        });
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
+        autoDeleteObjects: false,
+        cors: [{
+          allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.PUT],
+          allowedOrigins: ['*'],
+          allowedHeaders: ['*']
+        }],
+        encryption: s3.BucketEncryption.S3_MANAGED,
+        versioned: true
+      });
 
     // Processed bucket setup
     const processedBucket = props.existingProcessedBucket
       ? s3.Bucket.fromBucketName(this, 'ExistingProcessedBucket', props.existingProcessedBucket)
       : new s3.Bucket(this, 'ProcessedBucket', {
-          bucketName: `${props.existingSourceBucket}-processed`,
-          removalPolicy: cdk.RemovalPolicy.DESTROY,
-          autoDeleteObjects: true,
-          blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,  // Block all public access
-          publicReadAccess: false,  // Ensure no public read access
-          cors: [{
-            allowedMethods: [s3.HttpMethods.GET],
-            allowedOrigins: ['*'],
-            allowedHeaders: ['*']
-          }],
-          lifecycleRules: [{
-            transitions: [
-              {
-                storageClass: s3.StorageClass.INFREQUENT_ACCESS,
-                transitionAfter: Duration.days(90)  // Move to cheaper storage after 90 days
-              }
-            ]
-          }]
-        });
+        bucketName: `${props.existingSourceBucket}-processed`,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+        autoDeleteObjects: true,
+        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,  // Block all public access
+        publicReadAccess: false,  // Ensure no public read access
+        cors: [{
+          allowedMethods: [s3.HttpMethods.GET],
+          allowedOrigins: ['*'],
+          allowedHeaders: ['*']
+        }],
+        lifecycleRules: [{
+          transitions: [
+            {
+              storageClass: s3.StorageClass.INFREQUENT_ACCESS,
+              transitionAfter: Duration.days(90)  // Move to cheaper storage after 90 days
+            }
+          ]
+        }]
+      });
 
     // CloudFront Origin Access Identity
     const cloudfrontOAI = new cloudfront.OriginAccessIdentity(this, 'CloudFrontOAI', {
@@ -72,12 +72,12 @@ export class ImageOptimizationStack extends cdk.Stack {
     processedBucket.grantRead(cloudfrontOAI);
 
     // 2. Create a custom origin request policy that only allows GET and HEAD
-const originRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'ImageOriginRequestPolicy', {
-  originRequestPolicyName: 'ImageOriginRequestPolicy',
-  headerBehavior: cloudfront.OriginRequestHeaderBehavior.none(),
-  queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.none(),
-  cookieBehavior: cloudfront.OriginRequestCookieBehavior.none(),
-});
+    const originRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'ImageOriginRequestPolicy', {
+      originRequestPolicyName: 'ImageOriginRequestPolicy',
+      headerBehavior: cloudfront.OriginRequestHeaderBehavior.none(),
+      queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.none(),
+      cookieBehavior: cloudfront.OriginRequestCookieBehavior.none(),
+    });
 
     // Create CloudFront Distribution
     const distribution = new cloudfront.Distribution(this, 'ImageDistribution', {
@@ -97,7 +97,7 @@ const originRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'ImageOrigi
           headerBehavior: cloudfront.CacheHeaderBehavior.allowList('Accept'),
           enableAcceptEncodingGzip: true,
           enableAcceptEncodingBrotli: true,
-    }),
+        }),
         compress: true,
       },
       errorResponses: [
@@ -180,8 +180,52 @@ const originRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'ImageOrigi
         actions: ['s3:GetObject'],
         resources: [`arn:aws:s3:::${props.existingSourceBucket}/*`]
       });
+
+      // Add notification permissions
+      const notificationPermissions = new iam.PolicyStatement({
+        actions: [
+          's3:GetBucketNotification',
+          's3:PutBucketNotification',
+          's3:GetBucketNotificationConfiguration',
+          's3:PutBucketNotificationConfiguration'
+        ],
+        resources: [`arn:aws:s3:::${props.existingSourceBucket}`]
+      });
+
+      // Add permissions to Lambda roles
       initialProcessor.addToRolePolicy(sourcePermissions);
       sizeProcessor.addToRolePolicy(sourcePermissions);
+
+      // Add notification permissions to the custom resource handler
+      const customResourceRole = lambda.Function.fromFunctionName(
+        this,
+        'NotificationHandler',
+        `${this.stackName}-BucketNotificationsHandler050`
+      ).role;
+
+      if (customResourceRole) {
+        customResourceRole.addToPrincipalPolicy(notificationPermissions);
+      }
+
+      // Also add bucket policy for notification permissions
+      const existingBucket = s3.Bucket.fromBucketName(
+        this,
+        'ExistingSourceBucket',
+        props.existingSourceBucket
+      );
+
+      existingBucket.addToResourcePolicy(
+        new iam.PolicyStatement({
+          actions: [
+            's3:GetBucketNotification',
+            's3:PutBucketNotification',
+            's3:GetBucketNotificationConfiguration',
+            's3:PutBucketNotificationConfiguration'
+          ],
+          principals: [new iam.ServicePrincipal('lambda.amazonaws.com')],
+          resources: [existingBucket.bucketArn]
+        })
+      );
     }
 
     if (!props.existingProcessedBucket) {
