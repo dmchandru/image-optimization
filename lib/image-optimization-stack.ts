@@ -110,7 +110,7 @@ export class ImageOptimizationStack extends cdk.Stack {
 
     // Queue for size processing tasks
     const sizeProcessingQueue = new sqs.Queue(this, 'SizeProcessingQueue', {
-      visibilityTimeout: Duration.minutes(2),
+      visibilityTimeout: Duration.minutes(4),
       retentionPeriod: Duration.days(1),
       deadLetterQueue: {
         queue: dlq,
