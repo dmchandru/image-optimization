@@ -25,43 +25,43 @@ export class ImageOptimizationStack extends cdk.Stack {
     super(scope, id, props);
 
     // Source bucket setup
-    const sourceBucket = props.existingSourceBucket
+    const sourceBucket = props.existingSourceBucket 
       ? s3.Bucket.fromBucketName(this, 'ExistingSourceBucket', props.existingSourceBucket)
       : new s3.Bucket(this, 'SourceBucket', {
-        removalPolicy: cdk.RemovalPolicy.RETAIN,
-        autoDeleteObjects: false,
-        cors: [{
-          allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.PUT],
-          allowedOrigins: ['*'],
-          allowedHeaders: ['*']
-        }],
-        encryption: s3.BucketEncryption.S3_MANAGED,
-        versioned: true
-      });
+          removalPolicy: cdk.RemovalPolicy.RETAIN,
+          autoDeleteObjects: false,
+          cors: [{
+            allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.PUT],
+            allowedOrigins: ['*'],
+            allowedHeaders: ['*']
+          }],
+          encryption: s3.BucketEncryption.S3_MANAGED,
+          versioned: true
+        });
 
     // Processed bucket setup
     const processedBucket = props.existingProcessedBucket
       ? s3.Bucket.fromBucketName(this, 'ExistingProcessedBucket', props.existingProcessedBucket)
       : new s3.Bucket(this, 'ProcessedBucket', {
-        bucketName: `${props.existingSourceBucket}-processed`,
-        removalPolicy: cdk.RemovalPolicy.RETAIN,
-        autoDeleteObjects: false,
-        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,  // Block all public access
-        publicReadAccess: false,  // Ensure no public read access
-        cors: [{
-          allowedMethods: [s3.HttpMethods.GET],
-          allowedOrigins: ['*'],
-          allowedHeaders: ['*']
-        }],
-        lifecycleRules: [{
-          transitions: [
-            {
-              storageClass: s3.StorageClass.INFREQUENT_ACCESS,
-              transitionAfter: Duration.days(90)  // Move to cheaper storage after 90 days
-            }
-          ]
-        }]
-      });
+          bucketName: `${props.existingSourceBucket}-processed`,
+          removalPolicy: cdk.RemovalPolicy.DESTROY,
+          autoDeleteObjects: true,
+          blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,  // Block all public access
+          publicReadAccess: false,  // Ensure no public read access
+          cors: [{
+            allowedMethods: [s3.HttpMethods.GET],
+            allowedOrigins: ['*'],
+            allowedHeaders: ['*']
+          }],
+          lifecycleRules: [{
+            transitions: [
+              {
+                storageClass: s3.StorageClass.INFREQUENT_ACCESS,
+                transitionAfter: Duration.days(90)  // Move to cheaper storage after 90 days
+              }
+            ]
+          }]
+        });
 
     // CloudFront Origin Access Identity
     const cloudfrontOAI = new cloudfront.OriginAccessIdentity(this, 'CloudFrontOAI', {
@@ -71,24 +71,14 @@ export class ImageOptimizationStack extends cdk.Stack {
     // Grant CloudFront OAI read access to the processed bucket
     processedBucket.grantRead(cloudfrontOAI);
 
-    // 2. Create a custom origin request policy that only allows GET and HEAD
-    const originRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'ImageOriginRequestPolicy', {
-      originRequestPolicyName: 'ImageOriginRequestPolicy',
-      headerBehavior: cloudfront.OriginRequestHeaderBehavior.none(),
-      queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.none(),
-      cookieBehavior: cloudfront.OriginRequestCookieBehavior.none(),
-    });
-
     // Create CloudFront Distribution
     const distribution = new cloudfront.Distribution(this, 'ImageDistribution', {
       defaultBehavior: {
         origin: new origins.S3Origin(processedBucket, {
           originAccessIdentity: cloudfrontOAI
         }),
-        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-        originRequestPolicy: originRequestPolicy,  // Use custom origin request policy
-        responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.CORS_ALLOW_ALL_ORIGINS,
         cachePolicy: new cloudfront.CachePolicy(this, 'ImageCachePolicy', {
           defaultTtl: Duration.days(30),
           maxTtl: Duration.days(365),
@@ -98,24 +88,11 @@ export class ImageOptimizationStack extends cdk.Stack {
           enableAcceptEncodingGzip: true,
           enableAcceptEncodingBrotli: true,
         }),
+        originRequestPolicy: cloudfront.OriginRequestPolicy.CORS_S3_ORIGIN,
         compress: true,
       },
-      errorResponses: [
-        {
-          httpStatus: 403,
-          responsePagePath: '/404.html',
-          responseHttpStatus: 404,
-          ttl: Duration.minutes(30),
-        },
-        {
-          httpStatus: 404,
-          responsePagePath: '/404.html',
-          responseHttpStatus: 404,
-          ttl: Duration.minutes(30),
-        }
-      ],
       domainNames: props.domainName ? [props.domainName] : undefined,
-      certificate: props.certificateArn
+      certificate: props.certificateArn 
         ? certificateManager.Certificate.fromCertificateArn(this, 'Certificate', props.certificateArn)
         : undefined,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
@@ -180,86 +157,17 @@ export class ImageOptimizationStack extends cdk.Stack {
         actions: ['s3:GetObject'],
         resources: [`arn:aws:s3:::${props.existingSourceBucket}/*`]
       });
-
-      // Add notification permissions
-      const notificationPermissions = new iam.PolicyStatement({
-        actions: [
-          's3:GetBucketNotification',
-          's3:PutBucketNotification',
-          's3:GetBucketNotificationConfiguration',
-          's3:PutBucketNotificationConfiguration'
-        ],
-        resources: [`arn:aws:s3:::${props.existingSourceBucket}`]
-      });
-
-      // Add permissions to Lambda roles
       initialProcessor.addToRolePolicy(sourcePermissions);
       sizeProcessor.addToRolePolicy(sourcePermissions);
-
-      // Add notification permissions to the custom resource handler
-      const customResourceRole = lambda.Function.fromFunctionName(
-        this,
-        'NotificationHandler',
-        `${this.stackName}-BucketNotificationsHandler050`
-      ).role;
-
-      if (customResourceRole) {
-        customResourceRole.addToPrincipalPolicy(notificationPermissions);
-      }
-
-      // Also add bucket policy for notification permissions
-      const existingBucket = s3.Bucket.fromBucketName(
-        this,
-        'ExistingSourceBucket',
-        props.existingSourceBucket
-      );
-
-      existingBucket.addToResourcePolicy(
-        new iam.PolicyStatement({
-          actions: [
-            's3:GetBucketNotification',
-            's3:PutBucketNotification',
-            's3:GetBucketNotificationConfiguration',
-            's3:PutBucketNotificationConfiguration'
-          ],
-          principals: [new iam.ServicePrincipal('lambda.amazonaws.com')],
-          resources: [existingBucket.bucketArn]
-        })
-      );
     }
 
     if (!props.existingProcessedBucket) {
-      // For new bucket
       processedBucket.grantWrite(sizeProcessor);
-
-      // Add permission for s3-copy user
-      processedBucket.addToResourcePolicy(new iam.PolicyStatement({
-        actions: ['s3:PutObject', 's3:GetObject'],
-        resources: [processedBucket.arnForObjects('*')],
-        principals: [
-          new iam.ArnPrincipal('arn:aws:iam::603321723110:user/s3-copy')
-        ]
-      }));
     } else {
-      // For existing bucket
+      // Grant permissions for existing processed bucket
       sizeProcessor.addToRolePolicy(new iam.PolicyStatement({
         actions: ['s3:PutObject'],
         resources: [`arn:aws:s3:::${props.existingProcessedBucket}/*`]
-      }));
-
-      // Add policy statement for existing bucket
-      const existingBucket = s3.Bucket.fromBucketName(
-        this,
-        'ExistingProcessedBucket',
-        props.existingProcessedBucket
-      );
-
-      existingBucket.addToResourcePolicy(new iam.PolicyStatement({
-        actions: ['s3:PutObject', 's3:GetObject'],
-        resources: [existingBucket.arnForObjects('*')],
-        principals: [
-          new iam.ArnPrincipal('arn:aws:iam::603321723110:user/s3-copy')
-        ]
       }));
     }
 
