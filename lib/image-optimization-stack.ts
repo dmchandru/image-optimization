@@ -4,17 +4,23 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
-import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';  // Add this import
-
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as certificateManager from 'aws-cdk-lib/aws-certificatemanager';
+import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Duration } from 'aws-cdk-lib';
 
 interface ImageOptimizationStackProps extends cdk.StackProps {
   readonly stage: string;
   readonly existingSourceBucket?: string;
   readonly existingProcessedBucket?: string;
+  readonly domainName?: string;  // Optional custom domain name
+  readonly certificateArn?: string;  // Optional ACM certificate ARN
 }
 
 export class ImageOptimizationStack extends cdk.Stack {
+  public readonly distributionDomainName: string;  // Export CloudFront domain name
+
   constructor(scope: cdk.App, id: string, props: ImageOptimizationStackProps) {
     super(scope, id, props);
 
@@ -37,6 +43,7 @@ export class ImageOptimizationStack extends cdk.Stack {
     const processedBucket = props.existingProcessedBucket
       ? s3.Bucket.fromBucketName(this, 'ExistingProcessedBucket', props.existingProcessedBucket)
       : new s3.Bucket(this, 'ProcessedBucket', {
+          bucketName: `${props.existingSourceBucket}-processed`,
           removalPolicy: cdk.RemovalPolicy.DESTROY,
           autoDeleteObjects: true,
           cors: [{
@@ -45,12 +52,54 @@ export class ImageOptimizationStack extends cdk.Stack {
             allowedHeaders: ['*']
           }],
           lifecycleRules: [{
-            expiration: Duration.days(30),
-            prefix: 'processed/'
+            transitions: [
+              {
+                storageClass: s3.StorageClass.INFREQUENT_ACCESS,
+                transitionAfter: Duration.days(90)  // Move to cheaper storage after 90 days
+              }
+            ]
           }]
         });
 
-    // Queue for image processing tasks
+    // CloudFront Origin Access Identity
+    const cloudfrontOAI = new cloudfront.OriginAccessIdentity(this, 'CloudFrontOAI', {
+      comment: `OAI for ${id}`
+    });
+
+    // Grant CloudFront OAI read access to the processed bucket
+    processedBucket.grantRead(cloudfrontOAI);
+
+    // Create CloudFront Distribution
+    const distribution = new cloudfront.Distribution(this, 'ImageDistribution', {
+      defaultBehavior: {
+        origin: new origins.S3Origin(processedBucket, {
+          originAccessIdentity: cloudfrontOAI
+        }),
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        cachePolicy: new cloudfront.CachePolicy(this, 'ImageCachePolicy', {
+          defaultTtl: Duration.days(30),
+          maxTtl: Duration.days(365),
+          minTtl: Duration.days(1),
+          queryStringBehavior: cloudfront.CacheQueryStringBehavior.none(),
+          headerBehavior: cloudfront.CacheHeaderBehavior.allowList('Accept'),
+          enableAcceptEncodingGzip: true,
+          enableAcceptEncodingBrotli: true,
+        }),
+        originRequestPolicy: cloudfront.OriginRequestPolicy.CORS_S3_ORIGIN,
+        compress: true,
+      },
+      domainNames: props.domainName ? [props.domainName] : undefined,
+      certificate: props.certificateArn 
+        ? certificateManager.Certificate.fromCertificateArn(this, 'Certificate', props.certificateArn)
+        : undefined,
+      priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
+      enabled: true,
+      httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
+      minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
+    });
+
+    // Rest of your existing code...
     const imageProcessingQueue = new sqs.Queue(this, 'ImageProcessingQueue', {
       visibilityTimeout: Duration.minutes(5),
       retentionPeriod: Duration.days(1)
@@ -78,6 +127,7 @@ export class ImageOptimizationStack extends cdk.Stack {
       memorySize: 1024,
       environment: {
         QUEUE_URL: sizeProcessingQueue.queueUrl,
+        SOURCE_BUCKET: sourceBucket.bucketName,
         PROCESSED_BUCKET: processedBucket.bucketName
       }
     });
@@ -90,6 +140,7 @@ export class ImageOptimizationStack extends cdk.Stack {
       timeout: Duration.minutes(3),
       memorySize: 2048,
       environment: {
+        SOURCE_BUCKET: sourceBucket.bucketName,
         PROCESSED_BUCKET: processedBucket.bucketName
       }
     });
@@ -133,5 +184,30 @@ export class ImageOptimizationStack extends cdk.Stack {
       s3.EventType.OBJECT_CREATED,
       new s3n.LambdaDestination(initialProcessor)
     );
+
+    // Export CloudFront URL
+    this.distributionDomainName = distribution.distributionDomainName;
+
+    // Add stack outputs
+    new cdk.CfnOutput(this, 'SourceBucketName', {
+      value: sourceBucket.bucketName,
+      description: 'Name of the source S3 bucket'
+    });
+
+    new cdk.CfnOutput(this, 'ProcessedBucketName', {
+      value: processedBucket.bucketName,
+      description: 'Name of the processed images S3 bucket'
+    });
+
+    // Stack Outputs
+    new cdk.CfnOutput(this, 'DistributionId', {
+      value: distribution.distributionId,
+      description: 'CloudFront Distribution ID'
+    });
+
+    new cdk.CfnOutput(this, 'DistributionDomainName', {
+      value: distribution.distributionDomainName,
+      description: 'CloudFront Distribution Domain Name'
+    });
   }
 }
