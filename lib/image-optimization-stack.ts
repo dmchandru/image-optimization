@@ -25,7 +25,7 @@ export class ImageOptimizationStack extends cdk.Stack {
     super(scope, id, props);
 
     // Source bucket setup
-    const sourceBucket = props.existingSourceBucket 
+    const sourceBucket = props.existingSourceBucket
       ? s3.Bucket.fromBucketName(this, 'ExistingSourceBucket', props.existingSourceBucket)
       : new s3.Bucket(this, 'SourceBucket', {
           removalPolicy: cdk.RemovalPolicy.RETAIN,
@@ -115,7 +115,7 @@ const originRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'ImageOrigi
         }
       ],
       domainNames: props.domainName ? [props.domainName] : undefined,
-      certificate: props.certificateArn 
+      certificate: props.certificateArn
         ? certificateManager.Certificate.fromCertificateArn(this, 'Certificate', props.certificateArn)
         : undefined,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
@@ -185,12 +185,37 @@ const originRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'ImageOrigi
     }
 
     if (!props.existingProcessedBucket) {
+      // For new bucket
       processedBucket.grantWrite(sizeProcessor);
+
+      // Add permission for s3-copy user
+      processedBucket.addToResourcePolicy(new iam.PolicyStatement({
+        actions: ['s3:PutObject', 's3:GetObject'],
+        resources: [processedBucket.arnForObjects('*')],
+        principals: [
+          new iam.ArnPrincipal('arn:aws:iam::603321723110:user/s3-copy')
+        ]
+      }));
     } else {
-      // Grant permissions for existing processed bucket
+      // For existing bucket
       sizeProcessor.addToRolePolicy(new iam.PolicyStatement({
         actions: ['s3:PutObject'],
         resources: [`arn:aws:s3:::${props.existingProcessedBucket}/*`]
+      }));
+
+      // Add policy statement for existing bucket
+      const existingBucket = s3.Bucket.fromBucketName(
+        this,
+        'ExistingProcessedBucket',
+        props.existingProcessedBucket
+      );
+
+      existingBucket.addToResourcePolicy(new iam.PolicyStatement({
+        actions: ['s3:PutObject', 's3:GetObject'],
+        resources: [existingBucket.arnForObjects('*')],
+        principals: [
+          new iam.ArnPrincipal('arn:aws:iam::603321723110:user/s3-copy')
+        ]
       }));
     }
 
