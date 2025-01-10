@@ -44,8 +44,8 @@ export class ImageOptimizationStack extends cdk.Stack {
       ? s3.Bucket.fromBucketName(this, 'ExistingProcessedBucket', props.existingProcessedBucket)
       : new s3.Bucket(this, 'ProcessedBucket', {
           bucketName: `${props.existingSourceBucket}-processed`,
-          removalPolicy: cdk.RemovalPolicy.DESTROY,
-          autoDeleteObjects: true,
+          removalPolicy: cdk.RemovalPolicy.RETAIN,
+          autoDeleteObjects: false,
           blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,  // Block all public access
           publicReadAccess: false,  // Ensure no public read access
           cors: [{
