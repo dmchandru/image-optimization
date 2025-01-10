@@ -46,6 +46,8 @@ export class ImageOptimizationStack extends cdk.Stack {
           bucketName: `${props.existingSourceBucket}-processed`,
           removalPolicy: cdk.RemovalPolicy.DESTROY,
           autoDeleteObjects: true,
+          blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,  // Block all public access
+          publicReadAccess: false,  // Ensure no public read access
           cors: [{
             allowedMethods: [s3.HttpMethods.GET],
             allowedOrigins: ['*'],
@@ -69,14 +71,24 @@ export class ImageOptimizationStack extends cdk.Stack {
     // Grant CloudFront OAI read access to the processed bucket
     processedBucket.grantRead(cloudfrontOAI);
 
+    // 2. Create a custom origin request policy that only allows GET and HEAD
+const originRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'ImageOriginRequestPolicy', {
+  originRequestPolicyName: 'ImageOriginRequestPolicy',
+  headerBehavior: cloudfront.OriginRequestHeaderBehavior.none(),
+  queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.none(),
+  cookieBehavior: cloudfront.OriginRequestCookieBehavior.none(),
+});
+
     // Create CloudFront Distribution
     const distribution = new cloudfront.Distribution(this, 'ImageDistribution', {
       defaultBehavior: {
         origin: new origins.S3Origin(processedBucket, {
           originAccessIdentity: cloudfrontOAI
         }),
-        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        originRequestPolicy: originRequestPolicy,  // Use custom origin request policy
+        responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.CORS_ALLOW_ALL_ORIGINS,
         cachePolicy: new cloudfront.CachePolicy(this, 'ImageCachePolicy', {
           defaultTtl: Duration.days(30),
           maxTtl: Duration.days(365),
@@ -85,10 +97,23 @@ export class ImageOptimizationStack extends cdk.Stack {
           headerBehavior: cloudfront.CacheHeaderBehavior.allowList('Accept'),
           enableAcceptEncodingGzip: true,
           enableAcceptEncodingBrotli: true,
-        }),
-        originRequestPolicy: cloudfront.OriginRequestPolicy.CORS_S3_ORIGIN,
+    }),
         compress: true,
       },
+      errorResponses: [
+        {
+          httpStatus: 403,
+          responsePagePath: '/404.html',
+          responseHttpStatus: 404,
+          ttl: Duration.minutes(30),
+        },
+        {
+          httpStatus: 404,
+          responsePagePath: '/404.html',
+          responseHttpStatus: 404,
+          ttl: Duration.minutes(30),
+        }
+      ],
       domainNames: props.domainName ? [props.domainName] : undefined,
       certificate: props.certificateArn 
         ? certificateManager.Certificate.fromCertificateArn(this, 'Certificate', props.certificateArn)
